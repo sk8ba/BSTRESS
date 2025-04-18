@@ -25,10 +25,14 @@ pip install -r requirements.txt
 ## 🛠 Basic Usage
 
 # Test with default settings (10 threads per attack)
+```bash
 python bstress.py TARGET_IP
+```
 
 # Aggressive test (50 threads per attack)
+```bash
 python bstress.py TARGET_IP -t 50
+```
 
 ## 🌟 Use Cases
 > Security Teams: Test firewall/DDoS protection
