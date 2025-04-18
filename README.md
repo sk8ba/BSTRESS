@@ -16,7 +16,7 @@
 
 ## 🚀 Installation
 
-git clone https://github.com/yourusername/bstress.git
+git clone https://github.com/sk8ba/BSTRESS.git
 cd bstress
 pip install -r requirements.txt
 
