@@ -16,9 +16,11 @@
 
 ## 🚀 Installation
 
-```git clone https://github.com/sk8ba/BSTRESS.git
+```bash
+git clone https://github.com/sk8ba/BSTRESS.git
 cd bstress
-pip install -r requirements.txt```
+pip install -r requirements.txt
+```
 
 ## 🛠 Basic Usage
 
