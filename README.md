@@ -18,7 +18,7 @@
 
 ```bash
 git clone https://github.com/sk8ba/BSTRESS.git
-cd bstress
+cd BSTRESS
 pip install -r requirements.txt
 ```
 
