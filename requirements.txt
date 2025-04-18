@@ -1,0 +1,7 @@
+# BSTRESS Network Stress Tester Requirements
+requests==2.31.0          # For HTTP flood attacks
+psutil==5.9.5             # For network monitoring
+argparse==1.4.0           # For command-line arguments (built-in for Python 3+)
+
+# Optional (for advanced SYN flood)
+# scapy==2.5.0            # Uncomment for advanced packet crafting
