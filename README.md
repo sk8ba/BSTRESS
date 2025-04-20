@@ -26,12 +26,12 @@ pip install -r requirements.txt
 
 # Test with default settings (10 threads per attack)
 ```bash
-python bstress.py TARGET_IP
+python bstress.py
 ```
 
 # Aggressive test (50 threads per attack)
 ```bash
-python bstress.py TARGET_IP -t 50
+python bstress.py
 ```
 
 ## 🌟 Use Cases
