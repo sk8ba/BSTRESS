@@ -3,7 +3,7 @@
 **BSTRESS** is a high-performance Python-based network stress tester designed for **authorized penetration testing, security research, and network resilience validation**.
 
 ## ✨ Key Features
-- **Multi-Vector Attacks**: HTTP Flood, SYN Flood (raw sockets), UDP Flood
+- **Multi-Vector Attacks**: SYN Flood (raw sockets), UDP Flood
 - **Real-Time Monitoring**: Live stats, packet rates, and network usage
 - **Optimized Performance**: Threaded architecture for maximum throughput
 - **Professional Reporting**: Detailed analytics and error tracking
